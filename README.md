@@ -93,6 +93,8 @@ testkit::fuzz_result(t, found, rep.runs, out[..]);
 
 A run with no finding passes. A run with a finding fails the test and prints the report. A run of no inputs fails, because it proved nothing. The package imports nothing from goose-fuzz, so only the fuzz program needs it.
 
+The fuzz program of the package pins `goose-fuzz@v1.2.0` and `goose-process@v1.0.0`. It builds with `goose build --debug`, because a threaded program cannot use `goose run`. The program takes the `cov-path` argument, which prints the coverage compiler of the fuzz package. Build it again with `GOOSE_CC` set to that path to reach far more code.
+
 ## API
 
 | Call | What it does |
