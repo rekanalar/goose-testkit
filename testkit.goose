@@ -4,6 +4,8 @@ namespace testkit;
 
 import std;
 import scope;
+import filter;
+import lex;
 
 // The most bytes of test names that one tracker keeps. A test past
 // this bound still runs and counts. The report lists only the names
@@ -40,6 +42,15 @@ struct T {
     total_checks: i64,
     // The tests whose names the tracker did not keep.
     unlisted: i64,
+    // The options of this run, set by filter. An empty pattern and a
+    // shard count of 0 select every test. The tests that the pattern
+    // and the shard left out are counted as skips.
+    pat: const u8[:],
+    shard_i: i64,
+    shard_n: i64,
+    count: i64,
+    filtered: i64,
+    sharded: i64,
     // The bytes of every test name that ran, each ended by a line
     // feed. It stays the final field: a struct holds one growable
     // array, and it must come last.
@@ -51,7 +62,8 @@ fn new_t() -> T {
     return T { cur: Place { at: 0, len: 0 },
                checks: 0, fails: 0, expected_fails: 0, skipped: false, expected: false,
                xfail_done: false, pass_tests: 0, fail_tests: 0,
-               skip_tests: 0, xfail_tests: 0, total_checks: 0, unlisted: 0, names: [] };
+               skip_tests: 0, xfail_tests: 0, total_checks: 0, unlisted: 0, pat: "", shard_i: 0, shard_n: 0,
+               count: 1, filtered: 0, sharded: 0, names: [] };
 }
 
 // begin starts a test. The name appears in the report.
@@ -140,6 +152,9 @@ fn finish(t: T&) {
         i = i + 1;
     }
     if t.unlisted > 0 { print("  and ", t.unlisted, " more test(s) not listed"); }
+    if t.filtered > 0 || t.sharded > 0 {
+        print("  left out: ", t.filtered, " by the run filter, ", t.sharded, " by the shard");
+    }
     if t.fail_tests > 0 {
         abort("testkit: some tests failed; see the report above");
     }

@@ -81,6 +81,38 @@ jobs:
         env:
           GOOSE_HOME: ${{ runner.temp }}/goose-home
 
+      - name: Build the command and run it on the sample suite
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          goose build -o "$RUNNER_TEMP/testgen" cmd/testgen.goose
+          cd examples/suite
+          # The default run must give back the committed file. A checkout
+          # may change the line ends on Windows, so compare without them.
+          cp test/_gen.goose "$RUNNER_TEMP/gen.before"
+          "$RUNNER_TEMP/testgen"
+          diff <(tr -d '\r' < "$RUNNER_TEMP/gen.before") <(tr -d '\r' < test/_gen.goose)
+          goose run test/run.goose
+          "$RUNNER_TEMP/testgen" -run 'math/sum' -count 2
+          goose run test/run.goose | grep "left out: 2 by the run filter"
+          "$RUNNER_TEMP/testgen" -shard 1/2
+          goose run test/run.goose | grep "left out: 0 by the run filter, 1 by the shard"
+          "$RUNNER_TEMP/testgen"
+          # The faults end with a non-zero exit and name the file and the line.
+          faults="$RUNNER_TEMP/faults"
+          rm -rf "$faults"
+          mkdir -p "$faults/test"
+          cd "$faults"
+          printf 'testkit::run(t, "a")\nlet s = "open\n' > test/a.goose
+          if "$RUNNER_TEMP/testgen" 2> err.txt; then echo "a broken source gave exit 0"; exit 1; fi
+          grep -q "test/a.goose:2: a string never ends" err.txt
+          printf 'testkit::run(t, "dup")\ntestkit::begin(t, "dup")\n' > test/a.goose
+          "$RUNNER_TEMP/testgen" 2> err.txt > /dev/null
+          grep -q "the test name dup has 2 call sites" err.txt
+          if "$RUNNER_TEMP/testgen" -run 'a"b' 2> err.txt; then echo "a quote in -run gave exit 0"; exit 1; fi
+        env:
+          GOOSE_HOME: ${{ runner.temp }}/goose-home
+
       - name: Report the failure
         if: failure()
         run: |

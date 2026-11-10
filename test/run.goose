@@ -131,6 +131,148 @@ fn test_rerun() {
     assert(t2.names == "dead\n");
 }
 
+// The run pattern follows go test -run. Each row below was observed
+// on a real Go suite: TestA with children B (grandchild D) and C.
+fn test_matches() {
+    assert(testkit::matches("", "A") && testkit::matches("", "Nope"));
+    // A short pattern runs the subtree.
+    assert(testkit::matches("A", "A/B/D") && testkit::matches("A", "A/C"));
+    assert(!testkit::matches("A", "Nope"));
+    // The parent runs and the other children do not.
+    assert(testkit::matches("A/B", "A") && testkit::matches("A/B", "A/B/D"));
+    assert(!testkit::matches("A/B", "A/C"));
+    assert(testkit::matches("A/x", "A") && !testkit::matches("A/x", "A/B"));
+    // A first part that misses runs nothing, not even the parent.
+    assert(!testkit::matches("x/B", "A") && !testkit::matches("x/B", "A/B"));
+    assert(!testkit::matches("nope2", "A"));
+    // An empty first part matches anything.
+    assert(testkit::matches("/B", "A") && testkit::matches("/B", "Nope"));
+    assert(testkit::matches("/B", "A/B") && !testkit::matches("/B", "A/C"));
+    // Text match, anchors and alternatives.
+    assert(testkit::matches("lpha", "Alpha") && testkit::matches("lpha", "Zalpha"));
+    assert(testkit::matches("Alpha/eta", "Alpha/XBeta"));
+    assert(testkit::matches("Alpha/^Beta", "Alpha/Beta"));
+    assert(!testkit::matches("Alpha/^Beta", "Alpha/XBeta"));
+    assert(testkit::matches("Beta$", "XBeta") && !testkit::matches("Beta$", "BetaX"));
+    assert(testkit::matches("^A$", "A") && !testkit::matches("^A$", "AB"));
+    assert(testkit::matches("Alpha|Zalpha", "Zalpha") && !testkit::matches("Alpha|Beta", "Zeta"));
+}
+
+// The shard hash is fixed: FNV-1a on 32 bits. The two shards of a
+// pair hold every name once.
+fn test_shard() {
+    assert(testkit::shard_of("A", 4) == testkit::shard_of("A", 4));
+    assert(testkit::shard_of("anything", 1) == 0);
+    // Reference values: FNV-1a 32 of "a" is 0xe40c292c and of "" is 0x811c9dc5.
+    assert(testkit::shard_of("a", 4294967295) == 0xe40c292c);
+    assert(testkit::shard_of("", 4294967295) == 0x811c9dc5);
+    var both = 0;
+    for name in ["A", "A/B", "A/C", "Nope", "x", "y", "z"] {
+        let in1 = testkit::shard_of(name, 2) == 0;
+        let in2 = testkit::shard_of(name, 2) == 1;
+        assert(in1 != in2);
+        both = both + 1;
+    }
+    assert(both == 7);
+}
+
+// A run with a filter, a shard and a count.
+fn test_filter() {
+    var t = testkit::new_t();
+    testkit::filter(t, "A/B", 0, 0, 1);
+    var ran: i64 = 0;
+    testkit::run(t, "A") { tt =>
+        ran = ran + 1;
+        testkit::scope(tt, "B") { t2 => ran = ran + 10; };
+        testkit::scope(tt, "C") { t2 => ran = ran + 100; };
+    };
+    testkit::run(t, "Nope") { tt => ran = ran + 1000; };
+    assert(ran == 11);
+    // A and its subtest A/B pass. Nope is a skip. The list of names
+    // holds A and A/B only.
+    assert(t.filtered == 1 && t.skip_tests == 1 && t.pass_tests == 2);
+    assert(t.names.len == 6);
+
+    // Shard 1 of 2 and shard 2 of 2 run each test once between them.
+    var runs: i64 = 0;
+    for i in 2 {
+        var s = testkit::new_t();
+        testkit::filter(s, "", i + 1, 2, 1);
+        for k in 6 {
+            var nm: u8[>..] = [];
+            nm.push((65 + k) as u8);
+            testkit::run(s, nm[..]) { tt => runs = runs + 1; };
+        }
+        assert(s.sharded + s.pass_tests == 6);
+    }
+    assert(runs == 6);
+
+    // A count of 3 retries a test that fails twice, then passes.
+    var u = testkit::new_t();
+    testkit::filter(u, "", 0, 0, 3);
+    var attempts: i64 = 0;
+    let ok = testkit::run(u, "flaky") { tt =>
+        attempts = attempts + 1;
+        testkit::is_true(tt, attempts >= 3, "third attempt");
+    };
+    assert(ok && attempts == 3 && u.pass_tests == 1 && u.fail_tests == 0);
+}
+
+// found lexes one source text. It gives 0, or the line of the fault.
+// The names and the fault message go to the two buffers.
+fn found(src: const u8[:], names: u8[>..]&, why: u8[>..]&) -> i64 {
+    names.clear();
+    why.clear();
+    return testkit::lex_scan(src, names, why);
+}
+
+// A message about a file name hides every byte outside printable ASCII.
+fn test_put_safe() {
+    var out: u8[>..] = [];
+    testkit::lex_put_safe(out, "a\x1b[31mb\x00c\xffd e/f.goose");
+    assert(out[..] == "a?[31mb?c?d e/f.goose");
+}
+
+// The lexer finds the call sites that name a test with a literal and
+// ignores everything else.
+fn test_lex() {
+    var names: u8[>..] = [];
+    var why: u8[>..] = [];
+    // run and begin, with a nested paren, over lines.
+    assert(found("testkit::run(t, \"a\") { tt => }", names, why) == 0 && names[..] == "a\n");
+    assert(found("testkit::begin(t, \"b/c\");", names, why) == 0 && names[..] == "b/c\n");
+    assert(found("testkit::run(f(1, (2)), \"n\")", names, why) == 0 && names[..] == "n\n");
+    assert(found("testkit::run(\n  t,\n  \"far\"\n)", names, why) == 0 && names[..] == "far\n");
+    assert(found("testkit::run(t, \"p\"); testkit::run(t, \"q\");", names, why) == 0 && names[..] == "p\nq\n");
+    // A call in a comment, in a string, a name built at runtime, a
+    // longer identifier and a call with one argument give nothing.
+    assert(found("// testkit::run(t, \"x\")\n", names, why) == 0 && names.len == 0);
+    assert(found("let s = \"testkit::run(t, \\\"x\\\")\";", names, why) == 0 && names.len == 0);
+    assert(found("let q = '\"'; let r = 'x';", names, why) == 0 && names.len == 0);
+    assert(found("testkit::run(t, name)", names, why) == 0 && names.len == 0);
+    assert(found("xtestkit::run(t, \"x\")", names, why) == 0 && names.len == 0);
+    assert(found("testkit::run(t)", names, why) == 0 && names.len == 0);
+    // The faults name the line.
+    assert(found("a\nb\nlet s = \"open\nc", names, why) == 3 && why[..] == "a string never ends");
+    assert(found("\ntestkit::run(t", names, why) == 2 && why[..] == "a call never closes");
+    assert(found("testkit::run(t, \"a\\nb\")", names, why) == 1
+           && why[..] == "a test name holds a backslash; write the name in plain text");
+    assert(found("testkit::run(t, \"\")", names, why) == 1 && why[..] == "a test name is empty");
+    assert(found("testkit::run(t, \"\x01\")", names, why) == 1
+           && why[..] == "a test name holds a byte outside printable ASCII");
+    // A name of 1024 bytes passes. One of 1025 bytes faults.
+    var big: u8[>..] = [];
+    for b in "testkit::run(t, \"" { big.push(b); }
+    for k in 1024 { big.push('x'); }
+    for b in "\")" { big.push(b); }
+    assert(found(big[..], names, why) == 0 && names.len == 1025);
+    var big2: u8[>..] = [];
+    for b in "testkit::run(t, \"" { big2.push(b); }
+    for k in 1025 { big2.push('x'); }
+    for b in "\")" { big2.push(b); }
+    assert(found(big2[..], names, why) == 1 && why[..] == "a test name is longer than 1024 bytes");
+}
+
 fn main() {
     // A clean test: both checks run, the suite counts one pass.
     var t = testkit::new_t();
@@ -234,5 +376,10 @@ fn main() {
     test_cases();
     test_fixture();
     test_rerun();
+    test_matches();
+    test_shard();
+    test_filter();
+    test_lex();
+    test_put_safe();
     print("all testkit tests pass");
 }

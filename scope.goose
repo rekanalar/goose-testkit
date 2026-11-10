@@ -31,6 +31,12 @@ fn put_i64(out: u8[>..]&, n: i64) {
 // tracker, and ends the test. The caller cannot forget either call.
 // It gives false when an unexpected failure exists.
 fn run<F>(t: T&, name: const u8[:]) -> bool {
+    if !matches(t.pat, name) { leave_out(t, name, false); return true; }
+    if t.shard_n > 0 && shard_of(name, t.shard_n) != t.shard_i - 1 {
+        leave_out(t, name, true);
+        return true;
+    }
+    if t.count > 1 { return rerun(t, name, t.count) { tt => F(tt) }; }
     begin(t, name);
     F(t);
     return end(t);
@@ -50,6 +56,7 @@ fn scope<F>(t: T&, name: const u8[:]) -> bool {
     for b in t.names[t.cur.at..t.cur.at + t.cur.len] { joined.push(b); }
     joined.push('/');
     for b in name { joined.push(b); }
+    if !matches(t.pat, joined[..]) { return true; }
     begin(t, joined[..]);
     F(t);
     let ok = end(t);

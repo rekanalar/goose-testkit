@@ -4,12 +4,12 @@
 
 Test helpers for Goose programs. A failed check reports what it got and what it wanted, and the test goes on. The suite counts the results, prints a summary, and exits non-zero when a test fails.
 
-The model is the `testing` package of Go. A test is a plain function. The caller lists the tests by name, because Goose stores no function value.
+The model is the `testing` package of Go. A test is a plain function. The caller calls each test by name, because Goose stores no function value. The `testgen` command finds those names in the source. It adds the `-run` filter of Go, shards and a retry count.
 
 ## Install
 
 ```goose
-import testkit from "rekanalar/goose-testkit@v0.2.0";
+import testkit from "rekanalar/goose-testkit@v0.3.0";
 ```
 
 Put the import in `test/run.goose`. Your library does not need it.
@@ -18,7 +18,7 @@ Put the import in `test/run.goose`. Your library does not need it.
 
 ```goose
 import std;
-import testkit from "rekanalar/goose-testkit@v0.2.0";
+import testkit from "rekanalar/goose-testkit@v0.3.0";
 
 fn test_add(t: testkit::T&) {
     testkit::eq_i64(t, 1 + 2, 3);
@@ -51,6 +51,34 @@ testkit::run(t, "test_square") { tt =>
 
 A fixture is a generic function that sets up, calls the block, and tears down. The example `examples/scoped.goose` shows one. The teardown runs after a failed check and after a skip, because a check returns. Goose v2026.3 has no `defer`, so a fixture does not use one.
 
+## The testgen command
+
+The command reads the Goose files of `test/` and `src/` as text. It finds each `testkit::run(` and `testkit::begin(` call that names its test with a string literal. It writes `test/_gen.goose`, which holds the sorted names and the options of this run.
+
+```
+goose build -o testgen cmd/testgen.goose
+./testgen -run 'math' -shard 1/2 -count 2
+```
+
+The suite hands the options to the library at the start of `main`. The example `examples/suite` shows the whole flow.
+
+```goose
+import _gen;
+testkit::filter(t, _gen::run(), _gen::shard_i(), _gen::shard_n(), _gen::count());
+```
+
+| Option | What it does |
+|---|---|
+| `-run pattern` | Runs the tests that match. The rules are those of `go test -run`, as the limits list shows |
+| `-shard i/n` | Runs the tests whose name hash mod n equals i - 1. The hash is FNV-1a on 32 bits, so a name stays in its shard on every system |
+| `-count n` | Gives each test up to n attempts, as `rerun` does |
+
+A pattern splits on `/`. Each part matches a name part that holds it as text. A leading `^` anchors the start. A trailing `$` anchors the end. A `|` separates alternative patterns.
+
+A short pattern runs the whole subtree: `-run math` runs `math/sum`. A long pattern runs the parent alone: `-run math/x` runs `math` and none of its subtests. A test that the filter or the shard leaves out counts as a skip. The summary counts it under `left out`, and the names list does not hold it.
+
+A broken call site makes the command exit with code 1. The message names the file and the line. It warns on stderr when two call sites share one name. It writes `test/_gen.goose` and no other file.
+
 ## API
 
 | Call | What it does |
@@ -70,11 +98,14 @@ A fixture is a generic function that sets up, calls the block, and tears down. T
 | `scope(t, name) { t2 => ... }` | Runs a subtest of the running test, as `t.Run` does in Go. The name reads `parent/child`. A failed subtest fails the parent. A skipped one does not |
 | `cases(t, name, n) { t2, i => ... }` | Runs one subtest for each row index below n. The name of a row reads `name/i`. Call it inside a test |
 | `rerun(t, name, n) { tt => ... }` | Runs a test up to n times and stops at the first attempt that does not fail. Only the last attempt counts |
+| `filter(t, run, shard_i, shard_n, count)` | Sets the options of the run. The generated file holds the values. A shard count of 0 turns the shard off |
+| `matches(pat, name)` | Tells whether a name passes a `-run` pattern, by the rules of Go |
+| `shard_of(name, n)` | Gives the shard of a name, 0 to n - 1 |
 | `finish(t)` | Prints the counts and the names. Aborts when a test failed, so the exit code is not zero |
 
 ## Limits
 
-- **The caller lists the tests.** pytest, Rust and Go find the tests for you. Goose cannot store a function, so a test that `main` does not call does not run. The summary names each test that ran.
+- **The caller still calls each test.** pytest, Rust and Go run every test they find. Goose cannot store a function, so a test that `main` does not call does not run. The command finds the names. It does not call them.
 - **No assert rewriting.** pytest rewrites `assert a == b` to show both sides. Goose has no such hook, so each check takes the two values as arguments.
 - **A fixture is a function, not an injected argument.** pytest finds a fixture by the name of a parameter. Here the test calls the fixture function and passes a block. There is no autouse and no fixture override.
 - **A hard abort skips the teardown.** The teardown runs after a failed check and after a skip. A process abort, such as a failed `assert`, ends the program first.
@@ -85,13 +116,28 @@ A fixture is a generic function that sets up, calls the block, and tears down. T
 - **A block takes one trailing position.** Goose allows one trailing block for each call. Nest the calls for a fixture inside a case.
 - **`finish` aborts to set the exit code.** Goose has no call that exits with a chosen code. A failed suite prints a runtime error line after the summary.
 - **One tracker bounds its names.** It keeps 65536 bytes of test names. A test past that bound still runs and counts. The report counts the names it did not list.
+- **The lexer reads text, not a syntax tree.** A name built at runtime stays invisible. The command finds `run` and `begin` calls only. It does not find a subtest name. A call through an alias import is not found.
+- **A pattern is a small part of a regex.** Go reads each part as a regular expression. Here a part is text with `^`, `$` and `|`. Go reads `.` as any byte and `*` as a repeat. Here each one is a plain byte.
+- **A name holds printable ASCII and no backslash.** The command refuses any other name. So the generated file stays plain text.
+- **`-count` is a retry count.** Go `-count n` runs each test n times. Here n is the attempt limit of `rerun`. A test stops at its first pass.
+- **A shard splits the top-level tests.** A subtest runs with its parent.
+- **A left-out test counts as a skip.** Go reports no test that `-run` leaves out. Here the totals add up to the number of calls.
+- **One generated file for each suite.** There is no watch mode. Run the command again after you add a test.
+- **The command has bounds.** It reads 256 files and finds 4096 tests. A name holds 1024 bytes. A run holds 256 patterns. A count stops at 1000.
 - **`eq_f64` follows Go.** Go has no tolerance check in `testing`. A NaN on either side fails here, as the comparison `<=` does in Go.
 
 ## Security
 
 - **The report bounds what it prints.** A window of a differing text holds at most 48 bytes. A byte below 32 or above 126 prints as `\xNN`. A hostile text cannot write a control sequence to the terminal.
-- **The package reads no file, runs no command and opens no network.**
+- **The library reads no file, runs no command and opens no network.** Only the `testgen` command reads files.
 - **The name buffer has a bound.** A suite of many tests cannot grow the tracker without limit. Past 65536 bytes the tracker drops the name of each finished test.
+- **The command writes one file.** It writes `test/_gen.goose` through an atomic write, and no other path. It runs no code and starts no command.
+- **The generated file holds plain text only.** A name holds printable ASCII with no quote and no backslash. The `-run` pattern follows the same rule. A source cannot break out of the string literal in the generated file.
+- **The lexer bounds every string.** A string ends at the end of its line. A string that never ends is a fault with the file and the line. A name holds at most 1024 bytes.
+- **A file name prints without control bytes.** A message about a file replaces each byte outside printable ASCII with `?`. A hostile file name cannot write a control sequence to the terminal.
+- **The counts have bounds.** A suite of hostile sources cannot grow the list past 4096 tests or 256 files.
+- **Risk that stays: the command reads each source file whole.** It has no size cap. A file of many gigabytes in `test/` or `src/` uses that much memory. Run the command only on a tree you trust. Review a new file in a pull request before CI runs the command.
+- **Risk that stays: the command follows links.** A link inside `test/` or `src/` can point to any readable file. A link to a device such as `/dev/zero` never ends, and the read exhausts memory. The command prints no file content. It prints matching names, and the path and line of a fault. Keep links out of those directories.
 - **Test names and messages print as given.** The caller owns them. Only the windows of `eq_text` and `eq_bytes` escape control bytes.
 
 ## License
