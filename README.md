@@ -9,7 +9,7 @@ The model is the `testing` package of Go. A test is a plain function. The caller
 ## Install
 
 ```goose
-import testkit from "rekanalar/goose-testkit@v0.1.0";
+import testkit from "rekanalar/goose-testkit@v0.2.0";
 ```
 
 Put the import in `test/run.goose`. Your library does not need it.
@@ -18,7 +18,7 @@ Put the import in `test/run.goose`. Your library does not need it.
 
 ```goose
 import std;
-import testkit from "rekanalar/goose-testkit@v0.1.0";
+import testkit from "rekanalar/goose-testkit@v0.2.0";
 
 fn test_add(t: testkit::T&) {
     testkit::eq_i64(t, 1 + 2, 3);
@@ -36,6 +36,21 @@ fn main() {
 
 `finish` prints the summary and the name of each test that ran. Compare that list with the tests in your source, so a test that nobody calls shows itself.
 
+## Scoped tests, fixtures and tables
+
+Goose cannot store a function, but a generic function can call a block. So the scoped forms take a trailing block and call it once.
+
+```goose
+testkit::run(t, "test_rows") { tt =>
+    with_db(tt) { t2, db => testkit::eq_i64(t2, db.rows, 3) };
+};
+testkit::run(t, "test_square") { tt =>
+    testkit::cases(tt, "n", 4) { t2, i => testkit::eq_i64(t2, square(i), i * i) };
+};
+```
+
+A fixture is a generic function that sets up, calls the block, and tears down. The example `examples/scoped.goose` shows one. The teardown runs after a failed check and after a skip, because a check returns. Goose v2026.3 has no `defer`, so a fixture does not use one.
+
 ## API
 
 | Call | What it does |
@@ -51,14 +66,23 @@ fn main() {
 | `fail(t, msg)` | Reports a failure and goes on |
 | `skip(t, reason)` | Ends the checks of the test. A failure before the skip stays a failure |
 | `xfail(t, reason)` | Marks the failures of the test as expected. A test that passes anyway counts as a pass, with a note |
+| `run(t, name) { tt => ... }` | Runs one test: begin, the block, end. Gives false when the test failed |
+| `scope(t, name) { t2 => ... }` | Runs a subtest of the running test, as `t.Run` does in Go. The name reads `parent/child`. A failed subtest fails the parent. A skipped one does not |
+| `cases(t, name, n) { t2, i => ... }` | Runs one subtest for each row index below n. The name of a row reads `name/i`. Call it inside a test |
+| `rerun(t, name, n) { tt => ... }` | Runs a test up to n times and stops at the first attempt that does not fail. Only the last attempt counts |
 | `finish(t)` | Prints the counts and the names. Aborts when a test failed, so the exit code is not zero |
 
 ## Limits
 
 - **The caller lists the tests.** pytest, Rust and Go find the tests for you. Goose cannot store a function, so a test that `main` does not call does not run. The summary names each test that ran.
 - **No assert rewriting.** pytest rewrites `assert a == b` to show both sides. Goose has no such hook, so each check takes the two values as arguments.
-- **No fixture machinery and no plugins.** A fixture is a function. Use `defer` for the teardown. Plugins would need runtime hooks that the language lacks.
+- **A fixture is a function, not an injected argument.** pytest finds a fixture by the name of a parameter. Here the test calls the fixture function and passes a block. There is no autouse and no fixture override.
+- **A hard abort skips the teardown.** The teardown runs after a failed check and after a skip. A process abort, such as a failed `assert`, ends the program first.
+- **No plugins.** A plugin would need a hook that Goose cannot store. The report is plain text, so a program can read it.
+- **`cases` and `scope` need a running test.** Call them inside `run`. Outside a test, the parent name is the last test that ran, or empty.
+- **`rerun` follows pytest-rerunfailures.** Go `testing` has no retry. A failed attempt prints its failure lines, then a `RETRY` line.
 - **No parallel runs.** One tracker runs one test at a time.
+- **A block takes one trailing position.** Goose allows one trailing block for each call. Nest the calls for a fixture inside a case.
 - **`finish` aborts to set the exit code.** Goose has no call that exits with a chosen code. A failed suite prints a runtime error line after the summary.
 - **One tracker bounds its names.** It keeps 65536 bytes of test names. A test past that bound still runs and counts. The report counts the names it did not list.
 - **`eq_f64` follows Go.** Go has no tolerance check in `testing`. A NaN on either side fails here, as the comparison `<=` does in Go.
