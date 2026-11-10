@@ -218,6 +218,35 @@ fn test_filter() {
     assert(ok && attempts == 3 && u.pass_tests == 1 && u.fail_tests == 0);
 }
 
+// The result of a fuzz run. A clean run passes. A finding fails and
+// prints the report. A run of no input fails. A hostile report prints
+// escaped and cut.
+fn test_fuzz_result() {
+    var t = testkit::new_t();
+    testkit::begin(t, "clean");
+    testkit::fuzz_result(t, 0, 100, "seed: 1\nruns: 100\nfindings: 0\n");
+    assert(testkit::end(t) && t.total_checks == 1);
+    testkit::begin(t, "found");
+    testkit::fuzz_result(t, 2, 100, "x");
+    assert(!testkit::end(t) && t.fail_tests == 1);
+    testkit::begin(t, "none");
+    testkit::fuzz_result(t, 0, 0, "");
+    assert(!testkit::end(t) && t.fail_tests == 2);
+    // Under xfail a finding counts as an expected failure.
+    testkit::begin(t, "xfail");
+    testkit::xfail(t, "known");
+    testkit::fuzz_result(t, 1, 5, "x");
+    assert(testkit::end(t) && t.xfail_tests == 1);
+    var out: u8[>..] = [];
+    testkit::put_report(out, "a\x1b[31m\nb\x00");
+    assert(out[..] == "a\\x1b[31m\nb\\x00");
+    var big: u8[>..] = [];
+    for k in 5000 { big.push('x'); }
+    var cut: u8[>..] = [];
+    testkit::put_report(cut, big[..]);
+    assert(cut.len == 4096 + 30);
+}
+
 // found lexes one source text. It gives 0, or the line of the fault.
 // The names and the fault message go to the two buffers.
 fn found(src: const u8[:], names: u8[>..]&, why: u8[>..]&) -> i64 {
@@ -380,6 +409,7 @@ fn main() {
     test_shard();
     test_filter();
     test_lex();
+    test_fuzz_result();
     test_put_safe();
     print("all testkit tests pass");
 }

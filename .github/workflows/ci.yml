@@ -113,6 +113,22 @@ jobs:
         env:
           GOOSE_HOME: ${{ runner.temp }}/goose-home
 
+      - name: Run the fuzz pass
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          goose build --debug test/fuzz.goose -o "$RUNNER_TEMP/fuzz-pass"
+          # A coverage build finds far more than a blind one. The
+          # compiler of Windows has no coverage flag, so it runs blind.
+          cov="$("$RUNNER_TEMP/fuzz-pass" cov-path)"
+          if [ -n "$cov" ] && [ "${RUNNER_OS:-Linux}" != "Windows" ]; then
+            echo "coverage compiler: $cov"
+            GOOSE_CC="$cov" goose build --debug test/fuzz.goose -o "$RUNNER_TEMP/fuzz-pass"
+          fi
+          "$RUNNER_TEMP/fuzz-pass"
+        env:
+          GOOSE_HOME: ${{ runner.temp }}/goose-home
+
       - name: Report the failure
         if: failure()
         run: |

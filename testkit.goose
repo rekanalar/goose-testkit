@@ -6,6 +6,7 @@ import std;
 import scope;
 import filter;
 import lex;
+import fuzzpass;
 
 // The most bytes of test names that one tracker keeps. A test past
 // this bound still runs and counts. The report lists only the names
