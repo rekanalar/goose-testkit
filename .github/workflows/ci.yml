@@ -128,6 +128,8 @@ jobs:
           "$RUNNER_TEMP/fuzz-pass"
         env:
           GOOSE_HOME: ${{ runner.temp }}/goose-home
+          # The crashers and the corpus stay out of the checkout.
+          TMPDIR: ${{ runner.temp }}
 
       - name: Report the failure
         if: failure()
