@@ -9,7 +9,7 @@ The model is the `testing` package of Go. A test is a plain function that takes 
 ## Install
 
 ```goose
-import testkit from "rekanalar/goose-testkit@v0.5.0";
+import testkit from "rekanalar/goose-testkit@v0.6.0";
 ```
 
 Put the import in `test/run.goose`. Your library does not need it.
@@ -18,7 +18,7 @@ Put the import in `test/run.goose`. Your library does not need it.
 
 ```goose
 import std;
-import testkit from "rekanalar/goose-testkit@v0.5.0";
+import testkit from "rekanalar/goose-testkit@v0.6.0";
 
 fn test_add(t: testkit::T&) {
     testkit::eq_i64(t, 1 + 2, 3);
@@ -51,6 +51,28 @@ testkit::run(t, "test_square") { tt =>
 
 A fixture is a generic function that sets up, calls the block, and tears down. The example `examples/scoped.goose` shows one. The teardown runs after a failed check and after a skip, because a check returns. Goose v2026.3 has no `defer`, so a fixture does not use one.
 
+A fixture takes its settings as parameters. That is the override: a test that needs other settings passes other values. `test/patterns.goose` runs one fixture with the default rows and with other rows.
+
+```goose
+fn with_rows<F>(t: testkit::T&, rows: i64) {
+    var db = Db { rows: rows };
+    F(t, db);
+}
+testkit::run(t, "overridden fixture") { tt =>
+    with_rows(tt, 7) { t2, db => testkit::eq_i64(t2, db.rows, 7) };
+};
+```
+
+A compound value needs a text form for a check. Write a function that turns the value into text. Compare the text with `eq_text`. A failure then shows a byte diff of the two texts. The same test file runs this pattern with `format`.
+
+```goose
+var text: u8[>..] = [];
+format(text, "Db{rows=", db.rows, "}");
+testkit::eq_text(t2, text[..], "Db{rows=5}");
+```
+
+A group of cases can run in parallel. Write one `test_` function for each case. Give the functions a shared prefix. The run pattern `-run '^test_grid_'` then picks the group. A `cases` loop inside one function runs in one worker.
+
 ## The testgen command
 
 The command reads the Goose files of `test/` and `src/` as text. It finds each `testkit::run(` and `testkit::begin(` call that names its test with a string literal. It also finds the test functions of the suite. It writes `test/_gen.goose`. That file holds the sorted names, the calls to the test functions and the options of this run.
@@ -73,6 +95,7 @@ _gen::run_all(t);
 | `-run pattern` | Runs the tests that match. Each part of the pattern reads as a regular expression, as in `go test -run` |
 | `-shard i/n` | Runs the tests whose name hash mod n equals i - 1. The hash is FNV-1a on 32 bits, so a name stays in its shard on every system |
 | `-count n` | Gives each test up to n attempts, as `rerun` does |
+| `-cover` | Writes a coverage session around the run. The suite then reports the edges that its tests reached. See "The coverage of a suite" |
 | `-watch` | Watches the sources and writes the file again when a source changes |
 
 ### The test functions
@@ -120,6 +143,17 @@ goose build -o suite test/run.goose && ./suite
 
 A worker has its own memory, so a test cannot change the state of another test. A test that aborts ends only its worker. The run counts it as a failed test and prints the abort message. Rust runs the tests of a binary in parallel by default. Go runs only the tests that call `t.Parallel`. Here the choice is the flag.
 
+### The coverage of a suite
+
+The command takes `-cover`. The generated `run_all` opens a coverage session of the goose-fuzz package. It runs the tests and closes the session. Then it prints one line: the number of edges that the tests reached. In a parallel run each worker attaches to the session while it runs, so the edges of all workers count.
+
+```
+./testgen -parallel 4 -cover
+GOOSE_CC=<path of cov-cc> goose build --debug test/run.goose -o suite && ./suite
+```
+
+The root file of the suite declares the packages that the generated file imports: `goose-fuzz` and `goose-process`. The example `examples/cover` shows both. A build without the coverage compiler prints that the coverage is off, and the tests run as before. The library itself imports nothing from goose-fuzz. Only a suite that uses `-cover` needs it. The `-cover` flag needs `goose-fuzz@v1.3.0` or later, because the earlier releases record the edges of one thread only.
+
 ## The fuzz pass
 
 A fuzz target takes hostile bytes. Its result belongs in the suite report. The caller runs goose-fuzz and hands the numbers over:
@@ -134,7 +168,7 @@ testkit::fuzz_result(t, found, rep.runs, out[..]);
 
 A run with no finding passes. A run with a finding fails the test and prints the report. A run of no inputs fails, because it proved nothing. The package imports nothing from goose-fuzz, so only the fuzz program needs it.
 
-The fuzz program of the package pins `goose-fuzz@v1.2.0` and `goose-process@v1.0.0`. It builds with `goose build --debug`, because a threaded program cannot use `goose run`. The program takes the `cov-path` argument, which prints the coverage compiler of the fuzz package. Build it again with `GOOSE_CC` set to that path to reach far more code.
+The fuzz program of the package pins `goose-fuzz@v1.3.0` and `goose-process@v1.0.0`. It builds with `goose build --debug`, because a threaded program cannot use `goose run`. The program takes the `cov-path` argument, which prints the coverage compiler of the fuzz package. Build it again with `GOOSE_CC` set to that path to reach far more code.
 
 ## The benchmark mode
 
@@ -178,7 +212,7 @@ A benchmark is not a test. It does not count in the totals of the suite. The run
 
 - **A test function takes one tracker.** The command finds a function whose name starts with `test_`. That function must take one tracker and return nothing. Another shape is a fault. The message names the file and the line.
 - **No assert rewriting.** pytest rewrites `assert a == b` to show both sides. Goose has no such hook, so each check takes the two values as arguments.
-- **A fixture is a function, not an injected argument.** pytest finds a fixture by the name of a parameter. Here the test calls the fixture function and passes a block. There is no autouse and no fixture override.
+- **A fixture is a function, not an injected argument.** pytest finds a fixture by the name of a parameter. Here the test calls the fixture function and passes a block. There is no autouse. A fixture takes its settings as parameters instead of an override.
 - **A hard abort skips the teardown.** The teardown runs after a failed check and after a skip. A process abort, such as a failed `assert`, ends the program first.
 - **No plugins.** A plugin would need a hook that Goose cannot store. The report is plain text, so a program can read it.
 - **`cases` and `scope` need a running test.** Call them inside `run`. Outside a test, the parent name is the last test that ran, or empty.
@@ -198,6 +232,7 @@ A benchmark is not a test. It does not count in the totals of the suite. The run
 - **A left-out test counts as a skip.** Go reports no test that `-run` leaves out. Here the totals add up to the number of calls.
 - **The fuzz target is a `thread_fn` line the caller writes.** goose-fuzz builds its worker that way. The package cannot wrap it.
 - **The adapter takes numbers and text, not a `Report`.** A `Report` type would force the dependency on every user.
+- **The coverage of a suite is a count, not a report.** The line holds the number of edges. It names no source line and no percentage, because goose-fuzz holds neither.
 - **Coverage needs the compiler of goose-fuzz.** A system without the coverage flag runs blind. A blind run finds far less. See the goose-fuzz README.
 - **A fuzz run takes time.** The default of the pass here is 20000 inputs for each target, about 7 seconds. A suite that runs it at every commit grows slow.
 - **One generated file for each suite.** The watch mode writes that file again when a source changes. It does not run the suite.

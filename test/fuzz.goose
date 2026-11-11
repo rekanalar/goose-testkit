@@ -13,7 +13,7 @@
 import std;
 import os;
 import process from "rekanalar/goose-process@v1.0.0";
-import fuzz from "rekanalar/goose-fuzz@v1.2.0";
+import fuzz from "rekanalar/goose-fuzz@v1.3.0";
 import testkit from "..";
 
 // The lexer takes any bytes. It must not abort, a fault must carry a

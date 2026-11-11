@@ -163,6 +163,33 @@ jobs:
           # The crashers and the corpus stay out of the checkout.
           TMPDIR: ${{ runner.temp }}
 
+      - name: Run the patterns and the coverage of a parallel suite
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          goose run test/patterns.goose | grep -q "patterns pass"
+          goose build -o "$RUNNER_TEMP/testgen" cmd/testgen.goose
+          goose build --debug test/fuzz.goose -o "$RUNNER_TEMP/fuzz-pass"
+          cd examples/cover
+          "$RUNNER_TEMP/testgen" -parallel 2 -cover
+          goose build --debug test/run.goose -o "$RUNNER_TEMP/cover-run"
+          "$RUNNER_TEMP/cover-run" | grep -q "coverage: off"
+          cov="$("$RUNNER_TEMP/fuzz-pass" cov-path)"
+          if [ -n "$cov" ] && [ "${RUNNER_OS:-Linux}" != "Windows" ]; then
+            GOOSE_CC="$cov" goose build --debug test/run.goose -o "$RUNNER_TEMP/cover-run"
+            "$RUNNER_TEMP/cover-run" > "$RUNNER_TEMP/cover.txt"
+            grep -Eq "coverage: [1-9][0-9]* edges reached, 0 lost" "$RUNNER_TEMP/cover.txt"
+            grep -q "2 pass, 0 fail" "$RUNNER_TEMP/cover.txt"
+            # The serial form records the edges of the owner thread.
+            "$RUNNER_TEMP/testgen" -cover
+            GOOSE_CC="$cov" goose build --debug test/run.goose -o "$RUNNER_TEMP/cover-run"
+            "$RUNNER_TEMP/cover-run" > "$RUNNER_TEMP/cover.txt"
+            grep -Eq "coverage: [1-9][0-9]* edges reached, 0 lost" "$RUNNER_TEMP/cover.txt"
+          fi
+        env:
+          GOOSE_HOME: ${{ runner.temp }}/goose-home
+          TMPDIR: ${{ runner.temp }}
+
       - name: Report the failure
         if: failure()
         run: |
