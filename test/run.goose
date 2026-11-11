@@ -28,7 +28,7 @@ fn with_db<F>(t: testkit::T&, order: u8[>..]&) {
     order.push('d');
 }
 
-fn test_scopes() {
+fn check_scopes() {
     // The rules of t.Run in Go 1.27: the name reads parent/child, a
     // failed subtest fails every ancestor, a skipped subtest leaves
     // the parent a pass.
@@ -65,9 +65,16 @@ fn test_scopes() {
         testkit::scope(tt, "never") { t4 => testkit::fail(t4, "ran") };
     };
     assert(t3.fail_tests == 0 && t3.skip_tests == 1);
+
+    // Go turns each space of the name of a subtest into an underscore.
+    var t4 = testkit::new_t();
+    testkit::run(t4, "P") { tt =>
+        testkit::scope(tt, "a b") { t2 => testkit::eq_i64(t2, 1, 1) };
+    };
+    assert(t4.names == "P\nP/a_b\n");
 }
 
-fn test_cases() {
+fn check_cases() {
     var t = testkit::new_t();
     var seen: i64 = 0;
     testkit::run(t, "Table") { tt =>
@@ -92,7 +99,7 @@ fn test_cases() {
     assert(t2.fail_tests == 2);
 }
 
-fn test_fixture() {
+fn check_fixture() {
     var order: u8[>..] = [];
     fixture_run(order);
     assert(order == "sbd");
@@ -109,7 +116,7 @@ fn test_fixture() {
     assert(t.fail_tests == 1 && t.skip_tests == 1);
 }
 
-fn test_rerun() {
+fn check_rerun() {
     // A flaky test passes on the third attempt: it counts once, as a pass.
     var t = testkit::new_t();
     var k: i64 = 0;
@@ -133,7 +140,7 @@ fn test_rerun() {
 
 // The run pattern follows go test -run. Each row below was observed
 // on a real Go suite: TestA with children B (grandchild D) and C.
-fn test_matches() {
+fn check_matches() {
     assert(testkit::matches("", "A") && testkit::matches("", "Nope"));
     // A short pattern runs the subtree.
     assert(testkit::matches("A", "A/B/D") && testkit::matches("A", "A/C"));
@@ -158,9 +165,37 @@ fn test_matches() {
     assert(testkit::matches("Alpha|Zalpha", "Zalpha") && !testkit::matches("Alpha|Beta", "Zeta"));
 }
 
+// Each part of the run pattern reads as a regular expression. These
+// rows come from a real go test -run run on a Go suite with the tests
+// TestAlpha, TestAlphaTwo and TestAlphaSub.
+fn check_regex() {
+    // A part matches anywhere in the name part.
+    assert(testkit::matches("Alpha", "TestAlpha"));
+    assert(testkit::matches("Alpha", "TestAlphaTwo"));
+    assert(testkit::matches("Alpha", "TestAlphaSub"));
+    // A part that ends with $ matches only a name part that ends with a
+    // match.
+    assert(testkit::matches("Alpha$", "TestAlpha"));
+    assert(!testkit::matches("Alpha$", "TestAlphaTwo"));
+    // A part that begins with ^ matches only a name part that begins
+    // with a match.
+    assert(!testkit::matches("^Alpha", "TestAlpha"));
+    assert(testkit::matches("^Test", "TestAlpha"));
+    assert(!testkit::matches("^Test", "MyTest"));
+    // A dot reads as any byte and a class reads as a class.
+    assert(testkit::matches("A.*a", "TestAlpha"));
+    assert(testkit::matches("Test[A-Z]lpha", "TestAlpha"));
+    assert(!testkit::matches("Test[^A-Z]lpha", "TestAlpha"));
+    // A group holds its own slash and bar.
+    assert(testkit::matches("A/(x|y)", "A/x") && testkit::matches("A/(x|y)", "A/y"));
+    assert(!testkit::matches("A/(x|y)", "A/z"));
+    // A space of a pattern part reads as an underscore, as in Go.
+    assert(testkit::matches("Test Alpha", "Test_Alpha"));
+}
+
 // The shard hash is fixed: FNV-1a on 32 bits. The two shards of a
 // pair hold every name once.
-fn test_shard() {
+fn check_shard() {
     assert(testkit::shard_of("A", 4) == testkit::shard_of("A", 4));
     assert(testkit::shard_of("anything", 1) == 0);
     // Reference values: FNV-1a 32 of "a" is 0xe40c292c and of "" is 0x811c9dc5.
@@ -177,7 +212,7 @@ fn test_shard() {
 }
 
 // A run with a filter, a shard and a count.
-fn test_filter() {
+fn check_filter() {
     var t = testkit::new_t();
     testkit::filter(t, "A/B", 0, 0, 1);
     var ran: i64 = 0;
@@ -221,7 +256,7 @@ fn test_filter() {
 // The result of a fuzz run. A clean run passes. A finding fails and
 // prints the report. A run of no input fails. A hostile report prints
 // escaped and cut.
-fn test_fuzz_result() {
+fn check_fuzz_result() {
     var t = testkit::new_t();
     testkit::begin(t, "clean");
     testkit::fuzz_result(t, 0, 100, "seed: 1\nruns: 100\nfindings: 0\n");
@@ -256,7 +291,7 @@ fn found(src: const u8[:], names: u8[>..]&, why: u8[>..]&) -> i64 {
 }
 
 // A message about a file name hides every byte outside printable ASCII.
-fn test_put_safe() {
+fn check_put_safe() {
     var out: u8[>..] = [];
     testkit::lex_put_safe(out, "a\x1b[31mb\x00c\xffd e/f.goose");
     assert(out[..] == "a?[31mb?c?d e/f.goose");
@@ -264,7 +299,7 @@ fn test_put_safe() {
 
 // The lexer finds the call sites that name a test with a literal and
 // ignores everything else.
-fn test_lex() {
+fn check_lex() {
     var names: u8[>..] = [];
     var why: u8[>..] = [];
     // run and begin, with a nested paren, over lines.
@@ -300,6 +335,58 @@ fn test_lex() {
     for k in 1025 { big2.push('x'); }
     for b in "\")" { big2.push(b); }
     assert(found(big2[..], names, why) == 1 && why[..] == "a test name is longer than 1024 bytes");
+}
+
+// The benchmark times a block. It is not a test, and the run pattern
+// leaves it out.
+fn check_bench() {
+    var t = testkit::new_t();
+    var sum: i64 = 0;
+    let per = testkit::bench(t, "add", 100) { i => sum = sum + i; };
+    assert(sum == 4950);
+    assert(per >= 0.0);
+    // A benchmark does not count in the totals of the suite.
+    assert(t.pass_tests == 0 && t.fail_tests == 0 && t.total_checks == 0);
+    // The run pattern leaves a benchmark out.
+    var t2 = testkit::new_t();
+    testkit::filter(t2, "other", 0, 0, 1);
+    var hits: i64 = 0;
+    let per2 = testkit::bench(t2, "add", 10) { i => hits = hits + i; };
+    assert(hits == 0 && per2 == 0.0);
+}
+
+// The lexer finds the namespace of a file and the test functions of a
+// file.
+fn check_funcs() {
+    var ns: u8[>..] = [];
+    testkit::lex_namespace("namespace math;\nfn test_a(t: testkit::T&) { }\n", ns);
+    assert(ns[..] == "math");
+    ns.clear();
+    testkit::lex_namespace("import std;\nfn main() { }\n", ns);
+    assert(ns.len == 0);
+    var names: u8[>..] = [];
+    var why: u8[>..] = [];
+    assert(testkit::lex_funcs("fn test_a(t: testkit::T&) { }\nfn test_b(t: testkit::T&) { }\n", names, why) == 0);
+    assert(names[..] == "test_a\ntest_b\n");
+    // A function that is not a test gives nothing.
+    names.clear();
+    assert(testkit::lex_funcs("fn helper(t: i64) { }\nfn main() { }\n", names, why) == 0 && names.len == 0);
+    // A test function with a wrong shape is a fault that names the line.
+    names.clear();
+    why.clear();
+    assert(testkit::lex_funcs("fn test_a(t: i64) { }\n", names, why) == 1);
+    assert(why[..] == "a test function takes one tracker: testkit::T&");
+    names.clear();
+    why.clear();
+    assert(testkit::lex_funcs("fn test_a(t: testkit::T&, x: i64) { }\n", names, why) == 1);
+    assert(why[..] == "a test function takes one tracker");
+    names.clear();
+    why.clear();
+    assert(testkit::lex_funcs("fn test_a(t: testkit::T&) -> bool { }\n", names, why) == 1);
+    assert(why[..] == "a test function returns nothing");
+    // A test function inside a function is not a test.
+    names.clear();
+    assert(testkit::lex_funcs("fn outer() { fn test_a(t: testkit::T&) { } }\n", names, why) == 0 && names.len == 0);
 }
 
 fn main() {
@@ -401,15 +488,18 @@ fn main() {
     assert(big.names.len <= 65536 + 64);
     assert(big.unlisted > 0);
 
-    test_scopes();
-    test_cases();
-    test_fixture();
-    test_rerun();
-    test_matches();
-    test_shard();
-    test_filter();
-    test_lex();
-    test_fuzz_result();
-    test_put_safe();
+    check_scopes();
+    check_cases();
+    check_fixture();
+    check_rerun();
+    check_matches();
+    check_regex();
+    check_shard();
+    check_filter();
+    check_lex();
+    check_bench();
+    check_funcs();
+    check_fuzz_result();
+    check_put_safe();
     print("all testkit tests pass");
 }

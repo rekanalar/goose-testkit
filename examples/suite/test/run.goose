@@ -28,6 +28,9 @@ fn main() {
     };
     testkit::run(t, "flags") { tt => testkit::is_true(tt, true, "always"); };
 
+    // The command writes the calls to the test functions of the suite.
+    _gen::run_all(t);
+
     var names: u8[>..] = [];
     _gen::list(names);
     var found: i64 = 0;

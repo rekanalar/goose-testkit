@@ -150,3 +150,166 @@ fn lex_put_safe(out: u8[>..]&, s: const u8[:]) {
         else { out.push(b); }
     }
 }
+
+// lex_word reports whether the word w sits at i, and that no byte of an
+// identifier sits around it.
+fn lex_word(src: const u8[:], i: i64, w: const u8[:]) -> bool {
+    if !lex_at(src, i, w) { return false; }
+    if i > 0 && lex_is_ident(src[i - 1]) { return false; }
+    if i + w.len < src.len && lex_is_ident(src[i + w.len]) { return false; }
+    return true;
+}
+
+// lex_namespace appends the namespace of src to out. It appends
+// nothing when the file declares no namespace.
+fn lex_namespace(src: const u8[:], out: u8[>..]&) {
+    var i: i64 = 0;
+    while i < src.len {
+        let b = src[i];
+        if b == 47 && i + 1 < src.len && src[i + 1] == 47 {
+            while i < src.len && src[i] != 10 { i = i + 1; }
+        } else if b == 34 || b == 39 {
+            let e = lex_skip_quoted(src, i, b);
+            if e < 0 { return; }
+            i = e;
+        } else if lex_word(src, i, "namespace") {
+            var k = i + 9;
+            while k < src.len && (src[k] == 32 || src[k] == 9) { k = k + 1; }
+            var start = k;
+            while k < src.len && lex_is_ident(src[k]) { k = k + 1; }
+            for c in src[start..k] { out.push(c); }
+            return;
+        } else {
+            i = i + 1;
+        }
+    }
+}
+
+// lex_holds reports whether the text s holds the word w.
+fn lex_holds(s: const u8[:], w: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i + w.len <= s.len {
+        if lex_at(s, i, w) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// lex_paren_end gives the index after the bracket that closes the one
+// at i. It gives -1 when the file ends first.
+fn lex_paren_end(src: const u8[:], i: i64) -> i64 {
+    var depth: i64 = 0;
+    var k = i;
+    while k < src.len {
+        let b = src[k];
+        if b == 34 || b == 39 {
+            let e = lex_skip_quoted(src, k, b);
+            if e < 0 { return -1; }
+            k = e;
+        } else if b == 40 {
+            depth = depth + 1;
+            k = k + 1;
+        } else if b == 41 {
+            depth = depth - 1;
+            k = k + 1;
+            if depth == 0 { return k; }
+        } else {
+            k = k + 1;
+        }
+    }
+    return -1;
+}
+
+// lex_two_params reports whether the parameter list holds more than one
+// parameter.
+fn lex_two_params(params: const u8[:]) -> bool {
+    var depth: i64 = 0;
+    var i: i64 = 0;
+    while i < params.len {
+        let b = params[i];
+        if b == 34 || b == 39 {
+            let e = lex_skip_quoted(params, i, b);
+            if e < 0 { return false; }
+            i = e;
+        } else if b == 40 || b == 91 || b == 123 {
+            depth = depth + 1;
+            i = i + 1;
+        } else if b == 41 || b == 93 || b == 125 {
+            depth = depth - 1;
+            i = i + 1;
+        } else if b == 44 && depth == 0 {
+            return true;
+        } else {
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+// lex_func reads the declaration of the function whose name follows the
+// word fn at i. It gives the index to go on from, or -1 on a fault,
+// with the message in why. A function whose name does not start with
+// test_ is not a test, and it gives its index.
+fn lex_func(src: const u8[:], i: i64, out: u8[>..]&, why: u8[>..]&) -> i64 {
+    var k = i + 2;
+    while k < src.len && (src[k] == 32 || src[k] == 9) { k = k + 1; }
+    let start = k;
+    while k < src.len && lex_is_ident(src[k]) { k = k + 1; }
+    let name = src[start..k];
+    if name.len < 6 || !lex_at(src, start, "test_") { return k; }
+    while k < src.len && (src[k] == 32 || src[k] == 9) { k = k + 1; }
+    if k >= src.len || src[k] != 40 {
+        return -1 - lex_fault(src, start, "a test function takes a parameter list", why);
+    }
+    let e = lex_paren_end(src, k);
+    if e < 0 { return -1 - lex_fault(src, k, "a parameter list never closes", why); }
+    let params = src[k + 1..e - 1];
+    if !lex_holds(params, "testkit::T&") {
+        return -1 - lex_fault(src, start, "a test function takes one tracker: testkit::T&", why);
+    }
+    if lex_two_params(params) {
+        return -1 - lex_fault(src, start, "a test function takes one tracker", why);
+    }
+    var m = e;
+    while m < src.len && (src[m] == 32 || src[m] == 9) { m = m + 1; }
+    if m + 1 < src.len && src[m] == 45 && src[m + 1] == 62 {
+        return -1 - lex_fault(src, m, "a test function returns nothing", why);
+    }
+    for b in name { out.push(b); }
+    out.push(10);
+    return e;
+}
+
+// lex_funcs appends the name of each test function of src, each ended
+// by a line feed. A test function is a function at the top level of the
+// file whose name starts with test_ and that takes one tracker. It
+// gives 0 on success. On a fault it gives the line, and why holds the
+// message.
+fn lex_funcs(src: const u8[:], out: u8[>..]&, why: u8[>..]&) -> i64 {
+    var i: i64 = 0;
+    var depth: i64 = 0;
+    while i < src.len {
+        let b = src[i];
+        if b == 47 && i + 1 < src.len && src[i + 1] == 47 {
+            while i < src.len && src[i] != 10 { i = i + 1; }
+        } else if b == 34 || b == 39 {
+            let e = lex_skip_quoted(src, i, b);
+            if e < 0 { return lex_fault(src, i, "a string never ends", why); }
+            i = e;
+        } else if b == 123 {
+            depth = depth + 1;
+            i = i + 1;
+        } else if b == 125 {
+            depth = depth - 1;
+            if depth < 0 { return lex_fault(src, i, "a brace closes a block that never opened", why); }
+            i = i + 1;
+        } else if depth == 0 && lex_word(src, i, "fn") {
+            let r = lex_func(src, i, out, why);
+            if r < 0 { return -1 - r; }
+            i = r;
+        } else {
+            i = i + 1;
+        }
+    }
+    return 0;
+}

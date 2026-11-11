@@ -55,7 +55,8 @@ fn scope<F>(t: T&, name: const u8[:]) -> bool {
     var joined: u8[>..] = [];
     for b in t.names[t.cur.at..t.cur.at + t.cur.len] { joined.push(b); }
     joined.push('/');
-    for b in name { joined.push(b); }
+    // Go turns each space of the name of a subtest into an underscore.
+    for b in underscore(name) { joined.push(b); }
     if !matches(t.pat, joined[..]) { return true; }
     begin(t, joined[..]);
     F(t);

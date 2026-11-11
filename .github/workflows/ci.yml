@@ -94,9 +94,15 @@ jobs:
           diff <(tr -d '\r' < "$RUNNER_TEMP/gen.before") <(tr -d '\r' < test/_gen.goose)
           goose run test/run.goose
           "$RUNNER_TEMP/testgen" -run 'math/sum' -count 2
-          goose run test/run.goose | grep "left out: 2 by the run filter"
+          goose run test/run.goose | grep "left out: 4 by the run filter"
           "$RUNNER_TEMP/testgen" -shard 1/2
-          goose run test/run.goose | grep "left out: 0 by the run filter, 1 by the shard"
+          goose run test/run.goose | grep "left out: 0 by the run filter, 3 by the shard"
+          "$RUNNER_TEMP/testgen"
+          # A pattern that the regular expressions of the library refuse
+          # stops the run.
+          "$RUNNER_TEMP/testgen" -run '('
+          if goose run test/run.goose 2> err.txt > /dev/null; then echo "a bad pattern gave exit 0"; exit 1; fi
+          grep -q "the library refuses" err.txt
           "$RUNNER_TEMP/testgen"
           # The faults end with a non-zero exit and name the file and the line.
           faults="$RUNNER_TEMP/faults"
@@ -108,8 +114,16 @@ jobs:
           grep -q "test/a.goose:2: a string never ends" err.txt
           printf 'testkit::run(t, "dup")\ntestkit::begin(t, "dup")\n' > test/a.goose
           "$RUNNER_TEMP/testgen" 2> err.txt > /dev/null
-          grep -q "the test name dup has 2 call sites" err.txt
+          grep -q "the test name dup is in 2 places" err.txt
           if "$RUNNER_TEMP/testgen" -run 'a"b' 2> err.txt; then echo "a quote in -run gave exit 0"; exit 1; fi
+          # A test function with a wrong shape is a fault.
+          printf 'fn test_a(t: i64) { }\n' > test/a.goose
+          if "$RUNNER_TEMP/testgen" 2> err.txt; then echo "a wrong test function gave exit 0"; exit 1; fi
+          grep -q "test/a.goose:1: a test function takes one tracker" err.txt
+          # A namespace that differs from the name of the file is a fault.
+          printf 'namespace other;\nfn test_a(t: testkit::T&) { }\n' > test/a.goose
+          if "$RUNNER_TEMP/testgen" 2> err.txt; then echo "a wrong namespace gave exit 0"; exit 1; fi
+          grep -q "the namespace of test/a.goose is other" err.txt
         env:
           GOOSE_HOME: ${{ runner.temp }}/goose-home
 
