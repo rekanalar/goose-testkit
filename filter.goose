@@ -144,31 +144,50 @@ fn matches(pat: const u8[:], name: const u8[:]) -> bool {
     return ok;
 }
 
-// check_pattern reads every part of the pattern as a regular expression
-// and reports the ones that the standard library refuses. The filter
-// calls it at the start of the run, so a bad pattern stops the run
-// before the first test.
-fn check_pattern(pat: const u8[:]) {
-    if pat.len == 0 { return; }
+// pattern_fault reads every part of the pattern as a regular expression.
+// It gives true when the standard library refuses a part, and then why
+// holds the part and the reason.
+fn pattern_fault(pat: const u8[:], why: u8[>..]&) -> bool {
+    if pat.len == 0 { return false; }
     var from: i64 = 0;
     var more = true;
-    while more {
+    var refused = false;
+    while more && !refused {
         let to = pat_end(pat, from, 124);
         var pa: i64 = 0;
         var again = true;
-        while again {
+        while again && !refused {
             let pe = pat_end(pat[from..to], pa, 47);
             var body = underscore(part_body(pat[from + pa..from + pe]));
             if body.len > 0 {
                 var err: u8[>..] = [];
                 let _ = regex::compile(body[..], err);
-                if err.len > 0 { bad_pattern(body[..], err[..]); }
+                if err.len > 0 {
+                    for c in body { why.push(c); }
+                    for c in ": " { why.push(c); }
+                    for c in err { why.push(c); }
+                    refused = true;
+                }
             }
-            if pe >= to - from { break; }
-            pa = pe + 1;
+            if pe >= to - from { again = false; }
+            else { pa = pe + 1; }
         }
         if to >= pat.len { more = false; }
         else { from = to + 1; }
+    }
+    return refused;
+}
+
+// check_pattern ends the program when the standard library refuses a
+// part of the pattern. The filter calls it at the start of the run, so
+// a bad pattern stops the run before the first test.
+fn check_pattern(pat: const u8[:]) {
+    var why: u8[>..] = [];
+    if pattern_fault(pat, why) {
+        write_stderr("testkit: the run pattern holds a regular expression that the library refuses: ");
+        write_stderr(why[..]);
+        write_stderr("\n");
+        abort("testkit: the run pattern is not a valid regular expression");
     }
 }
 

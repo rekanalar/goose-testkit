@@ -108,6 +108,18 @@ A broken call site makes the command exit with code 1. The message names the fil
 
 The command takes `-watch`. It reads the sources every 250 milliseconds. A source that changed makes the command write the generated file again, and it prints the file that changed. The command does not run the suite. Run the suite again after it writes the file.
 
+### The parallel run
+
+The command takes `-parallel n`, from 1 to 64. The generated `run_all` then runs each test function in its own worker thread, `n` workers at a time. Each worker owns a tracker. It puts its totals on a queue, and `run_all` adds them to the tracker of the caller. The names print in byte order, so the report does not depend on which worker ended first.
+
+```
+goose build -o testgen cmd/testgen.goose
+./testgen -parallel 4
+goose build -o suite test/run.goose && ./suite
+```
+
+A worker has its own memory, so a test cannot change the state of another test. A test that aborts ends only its worker. The run counts it as a failed test and prints the abort message. Rust runs the tests of a binary in parallel by default. Go runs only the tests that call `t.Parallel`. Here the choice is the flag.
+
 ## The fuzz pass
 
 A fuzz target takes hostile bytes. Its result belongs in the suite report. The caller runs goose-fuzz and hands the numbers over:
@@ -156,6 +168,7 @@ A benchmark is not a test. It does not count in the totals of the suite. The run
 | `filter(t, run, shard_i, shard_n, count)` | Sets the options of the run. The generated file holds the values. A shard count of 0 turns the shard off |
 | `matches(pat, name)` | Tells whether a name passes a `-run` pattern. Each part of the pattern reads as a regular expression, by the rules of Go |
 | `bench(t, name, iters) { i => ... }` | Times a block. It prints the nanoseconds of one iteration and gives that number to the caller. A benchmark is not a test |
+| `report(t)`, `absorb(t)`, `crashed(t, name, why)`, `sort_names(t)` | The calls of the generated parallel run. A worker reports its totals, the caller absorbs them, counts an aborted worker as a failure, and sorts the names |
 | `shard_of(name, n)` | Gives the shard of a name, 0 to n - 1 |
 | `fuzz_result(t, found, runs, report)` | Records the result of one fuzz run. A finding fails. A run of no input fails |
 | `put_report(out, report)` | Appends a report with each byte outside printable ASCII as `\xNN`, cut at 4096 bytes |
@@ -170,7 +183,9 @@ A benchmark is not a test. It does not count in the totals of the suite. The run
 - **No plugins.** A plugin would need a hook that Goose cannot store. The report is plain text, so a program can read it.
 - **`cases` and `scope` need a running test.** Call them inside `run`. Outside a test, the parent name is the last test that ran, or empty.
 - **`rerun` follows pytest-rerunfailures.** Go `testing` has no retry. A failed attempt prints its failure lines, then a `RETRY` line.
-- **No parallel runs.** One tracker runs one test at a time.
+- **A parallel run covers the test functions only.** A block cannot cross a thread boundary. So a worker cannot run a block that the caller holds. A test that `main` calls through `run` stays on the main thread. Go runs parallel subtests inside one test. Here a test with its subtests runs in one worker.
+- **A parallel suite needs `goose build`.** The tool refuses a threaded program under `goose run`. A worker prints its failure lines as it runs, so the lines of two tests can interleave.
+- **A parallel run works in waves.** It starts up to n workers and waits for all of them. A slow test holds the next wave back. The flag bounds the wave, not the thread count of the machine.
 - **A block takes one trailing position.** Goose allows one trailing block for each call. Nest the calls for a fixture inside a case.
 - **`finish` aborts to set the exit code.** Goose has no call that exits with a chosen code. A failed suite prints a runtime error line after the summary.
 - **One tracker bounds its names.** It keeps 65536 bytes of test names. A test past that bound still runs and counts. The report counts the names it did not list.
@@ -200,6 +215,7 @@ A benchmark is not a test. It does not count in the totals of the suite. The run
 - **A file name prints without control bytes.** A message about a file replaces each byte outside printable ASCII with `?`. A hostile file name cannot write a control sequence to the terminal.
 - **The counts have bounds.** A suite of hostile sources cannot grow the list past 4096 tests or 256 files.
 - **Risk that stays: the command reads each source file whole.** It has no size cap. A file of many gigabytes in `test/` or `src/` uses that much memory. Run the command only on a tree you trust. Review a new file in a pull request before CI runs the command.
+- **The parallel run bounds its workers.** The flag takes 1 to 64. A suite never runs more than 64 threads at a time. A worker that aborts cannot stop the suite. Its abort message prints with each byte outside printable ASCII as `\xNN`, cut at 4096 bytes.
 - **The watch mode reads the sources again and again.** It reads each file whole, every 250 milliseconds. A file of many gigabytes in `test/` or `src/` uses that much memory on every round.
 - **Risk that stays: the command follows links.** A link inside `test/` or `src/` can point to any readable file. A link to a device such as `/dev/zero` never ends, and the read exhausts memory. The command prints no file content. It prints matching names, and the path and line of a fault. Keep links out of those directories.
 - **The report of a fuzz run prints escaped and bounded.** It holds abort messages of a hostile target. Each byte outside printable ASCII prints as `\xNN`. The print stops at 4096 bytes.

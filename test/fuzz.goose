@@ -46,7 +46,7 @@ fn lex_target(d: const u8[:]) {
 
 // The matcher takes a pattern and a name, split at the first zero byte.
 // It must not abort, a repeat must agree, an empty pattern must match,
-// a plain name must match itself, and the shard must lie in range.
+// a name of letters, digits, '_' and '/' must match itself, and the shard must lie in range.
 fn match_target(d: const u8[:]) {
     var cut = d.len;
     for i in d.len {
@@ -55,11 +55,15 @@ fn match_target(d: const u8[:]) {
     let pat = d[0..cut];
     var name = d[0..0];
     if cut < d.len { name = d[cut + 1..d.len]; }
+    // The filter refuses a pattern that the library cannot read, so a
+    // pattern of that kind never reaches the matcher.
+    var why: u8[>..] = [];
+    if testkit::pattern_fault(pat, why) { return; }
     let a = testkit::matches(pat, name);
     assert(a == testkit::matches(pat, name));
     assert(testkit::matches("", name));
     var plain = true;
-    for b in name { if b == 94 || b == 36 || b == 124 { plain = false; } }
+    for b in name { if !((b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 || b == 47) { plain = false; } }
     if plain { assert(testkit::matches(name, name)); }
     var n: i64 = 1;
     if d.len > 0 { n = (d[0] as i64) % 8 + 1; }

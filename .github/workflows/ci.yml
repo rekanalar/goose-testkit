@@ -127,6 +127,24 @@ jobs:
         env:
           GOOSE_HOME: ${{ runner.temp }}/goose-home
 
+      - name: Run the parallel helpers and a parallel suite
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          goose build -o "$RUNNER_TEMP/ptest" test/parallel.goose
+          "$RUNNER_TEMP/ptest" | grep -q "parallel tests pass"
+          goose build -o "$RUNNER_TEMP/testgen" cmd/testgen.goose
+          cd examples/suite
+          "$RUNNER_TEMP/testgen" -parallel 2
+          goose build -o "$RUNNER_TEMP/psuite" test/run.goose
+          "$RUNNER_TEMP/psuite" > "$RUNNER_TEMP/psuite.txt"
+          grep -q "ran: test_product" "$RUNNER_TEMP/psuite.txt"
+          grep -q "ran: test_sum" "$RUNNER_TEMP/psuite.txt"
+          if "$RUNNER_TEMP/testgen" -parallel 0 2> err.txt; then echo "-parallel 0 gave exit 0"; exit 1; fi
+          "$RUNNER_TEMP/testgen"
+        env:
+          GOOSE_HOME: ${{ runner.temp }}/goose-home
+
       - name: Run the fuzz pass
         timeout-minutes: 25
         run: |

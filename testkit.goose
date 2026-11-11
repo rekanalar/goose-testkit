@@ -8,6 +8,7 @@ import filter;
 import lex;
 import fuzzpass;
 import bench;
+import parallel;
 
 // The most bytes of test names that one tracker keeps. A test past
 // this bound still runs and counts. The report lists only the names

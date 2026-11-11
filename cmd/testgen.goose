@@ -1,7 +1,7 @@
 // testgen: finds the tests of a Goose suite and writes test/_gen.goose.
 //
 // Build: goose build cmd/testgen.goose -o testgen
-// Run from the package root: testgen [-run pattern] [-shard i/n] [-count n] [-watch]
+// Run from the package root: testgen [-run pattern] [-shard i/n] [-count n] [-parallel n] [-watch]
 //
 // The command reads the .goose files of test/ and src/, lexes each as
 // text, and collects the name of each testkit::run and testkit::begin
@@ -263,9 +263,73 @@ fn write_calls(out: u8[>..]&, decls: const u8[:]) {
     }
 }
 
+// write_parallel writes the worker and the run of a parallel suite. The
+// worker runs the test of one index in its own tracker. The run starts
+// the workers in waves of n, waits for each, and adds their parts.
+fn write_parallel(out: u8[>..]&, decls: const u8[:], workers: i64) {
+    put(out, "thread_fn par_worker(idx: i64) {\n");
+    put(out, "    var t = testkit::new_t();\n");
+    put(out, "    testkit::filter(t, run(), shard_i(), shard_n(), count());\n");
+    var start: i64 = 0;
+    var i: i64 = 0;
+    var k: i64 = 0;
+    while i < decls.len {
+        if decls[i] == 10 {
+            let line = decls[start..i];
+            start = i + 1;
+            put(out, "    if idx == ");
+            testkit::put_i64(out, k);
+            put(out, " { testkit::run(t, \"");
+            put(out, decl_name(line));
+            put(out, "\") { tt => ");
+            let ns = decl_ns(line);
+            if ns.len > 0 { put(out, ns); }
+            put(out, "::");
+            put(out, decl_name(line));
+            put(out, "(tt); }; }\n");
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    put(out, "    testkit::report(t);\n}\n\n");
+    put(out, "fn par_name(idx: i64) -> const u8[:] {\n");
+    start = 0;
+    i = 0;
+    k = 0;
+    while i < decls.len {
+        if decls[i] == 10 {
+            put(out, "    if idx == ");
+            testkit::put_i64(out, k);
+            put(out, " { return \"");
+            put(out, decl_name(decls[start..i]));
+            put(out, "\"; }\n");
+            start = i + 1;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    put(out, "    return \"\";\n}\n\n");
+    put(out, "// run_all runs every test of the suite in parallel workers.\n");
+    put(out, "fn run_all(t: testkit::T&) {\n");
+    put(out, "    let total: i64 = ");
+    testkit::put_i64(out, k);
+    put(out, ";\n    var done: i64 = 0;\n    while done < total {\n");
+    put(out, "        var ids: i64[>..] = [];\n");
+    put(out, "        while ids.len < ");
+    testkit::put_i64(out, workers);
+    put(out, " && done + ids.len < total {\n");
+    put(out, "            ids.push(thread_spawn_contained(par_worker, done + ids.len));\n        }\n");
+    put(out, "        var j: i64 = 0;\n        while j < ids.len {\n");
+    put(out, "            var why: u8[>..] = [];\n");
+    put(out, "            if !thread_wait(ids[j], why) { testkit::crashed(t, par_name(done + j), why[..]); }\n");
+    put(out, "            j = j + 1;\n        }\n");
+    put(out, "        testkit::absorb(t);\n        done = done + ids.len;\n    }\n");
+    put(out, "    testkit::sort_names(t);\n}\n");
+}
+
 // generate finds the tests of the suite and writes the generated file.
 // It gives the count of the tests it found.
-fn generate(run: const u8[:], shard_i: i64, shard_n: i64, count: i64, quiet: bool) -> i64 {
+fn generate(run: const u8[:], shard_i: i64, shard_n: i64, count: i64, workers: i64, quiet: bool) -> i64 {
     var found: u8[>..] = [];
     var decls: u8[>..] = [];
     var roots: i64 = 0;
@@ -358,10 +422,14 @@ fn generate(run: const u8[:], shard_i: i64, shard_n: i64, count: i64, quiet: boo
     put(out, "; }\nfn count() -> i64 { return ");
     testkit::put_i64(out, count);
     put(out, "; }\n\n");
-    put(out, "// run_all runs every test of the suite.\n");
-    put(out, "fn run_all(t: testkit::T&) {\n");
-    write_calls(out, decls[..]);
-    put(out, "}\n");
+    if workers > 0 {
+        write_parallel(out, decls[..], workers);
+    } else {
+        put(out, "// run_all runs every test of the suite.\n");
+        put(out, "fn run_all(t: testkit::T&) {\n");
+        write_calls(out, decls[..]);
+        put(out, "}\n");
+    }
     if !write_file_atomic(OUT_PATH, out[..]) { die("cannot write test/_gen.goose; does test/ exist?"); }
     return unique;
 }
@@ -451,6 +519,7 @@ fn main() {
     var shard_n: i64 = 0;
     var count: i64 = 1;
     var watch = false;
+    var workers: i64 = 0;
     let a = args();
     var i: i64 = 1;
     while i < a.len {
@@ -474,16 +543,20 @@ fn main() {
             shard_n = parse_num(s[slash + 1..s.len]);
             if shard_i < 1 || shard_n < 1 || shard_i > shard_n { die("-shard takes i/n with 1 <= i <= n"); }
             i = i + 2;
+        } else if a[i] == "-parallel" && i + 1 < a.len {
+            workers = parse_num(a[i + 1]);
+            if workers < 1 || workers > testkit::MAX_WORKERS { die("-parallel takes a number from 1 to 64"); }
+            i = i + 2;
         } else if a[i] == "-watch" {
             watch = true;
             i = i + 1;
         } else {
-            die("usage: testgen [-run pattern] [-shard i/n] [-count n] [-watch]");
+            die("usage: testgen [-run pattern] [-shard i/n] [-count n] [-parallel n] [-watch]");
         }
     }
     check_run(run[..]);
 
-    let tests = generate(run[..], shard_i, shard_n, count, false);
+    let tests = generate(run[..], shard_i, shard_n, count, workers, false);
     print("testgen: ", tests, " tests, wrote ", OUT_PATH);
     if !watch { return; }
 
@@ -497,7 +570,7 @@ fn main() {
         scan_sources("src", cur);
         var changed: u8[>..] = [];
         if any_change(prev, cur, changed) {
-            let n = generate(run[..], shard_i, shard_n, count, true);
+            let n = generate(run[..], shard_i, shard_n, count, workers, true);
             var at: i64 = 0;
             var k: i64 = 0;
             while k < changed.len {
